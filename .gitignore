@@ -1,3 +1,7 @@
 # Local learning notes
 
 /.model
+/outputs
+__pycache__/
+
+/notes

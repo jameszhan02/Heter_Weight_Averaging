@@ -121,6 +121,207 @@ def expand_matrix_by_indices(
     return target
 
 
+def variable_block_slot_indices(
+    source_blocks: int,
+    target_blocks: int,
+    source_block_size: int,
+    target_block_size: int,
+) -> tuple[list[int], list[int]]:
+    """Map blocks first, then map coordinates inside each block.
+
+    This is an experimental cross-architecture helper. It supports both expansion
+    and shrinking by copying a uniformly selected subset when the source side is
+    larger than the target side.
+    """
+    if source_blocks <= 0:
+        raise ValueError("source_blocks must be positive")
+    if target_blocks <= 0:
+        raise ValueError("target_blocks must be positive")
+    if source_block_size <= 0:
+        raise ValueError("source_block_size must be positive")
+    if target_block_size <= 0:
+        raise ValueError("target_block_size must be positive")
+
+    if source_blocks <= target_blocks:
+        source_block_indices = list(range(source_blocks))
+        target_block_indices = map_slot(source_blocks, target_blocks)
+    else:
+        target_block_indices = list(range(target_blocks))
+        source_block_indices = map_slot(target_blocks, source_blocks)
+
+    if source_block_size <= target_block_size:
+        source_offsets = list(range(source_block_size))
+        target_offsets = map_slot(source_block_size, target_block_size)
+    else:
+        target_offsets = list(range(target_block_size))
+        source_offsets = map_slot(target_block_size, source_block_size)
+
+    source_indices: list[int] = []
+    target_indices: list[int] = []
+
+    for source_block, target_block in zip(source_block_indices, target_block_indices):
+        source_start = source_block * source_block_size
+        target_start = target_block * target_block_size
+
+        for source_offset, target_offset in zip(source_offsets, target_offsets):
+            source_indices.append(source_start + source_offset)
+            target_indices.append(target_start + target_offset)
+
+    return source_indices, target_indices
+
+
+def remap_matrix_by_block_axes(
+    source: torch.Tensor,
+    target_shape: tuple[int, int],
+    row_source_blocks: int,
+    row_target_blocks: int,
+    row_source_block_size: int,
+    row_target_block_size: int,
+    col_source_blocks: int,
+    col_target_blocks: int,
+    col_source_block_size: int,
+    col_target_block_size: int,
+    fill_value: float = 0,
+) -> torch.Tensor:
+    """Remap a matrix by experimental variable-size block mappings."""
+    row_source, row_target = variable_block_slot_indices(
+        source_blocks=row_source_blocks,
+        target_blocks=row_target_blocks,
+        source_block_size=row_source_block_size,
+        target_block_size=row_target_block_size,
+    )
+    col_source, col_target = variable_block_slot_indices(
+        source_blocks=col_source_blocks,
+        target_blocks=col_target_blocks,
+        source_block_size=col_source_block_size,
+        target_block_size=col_target_block_size,
+    )
+
+    return expand_matrix_by_indices(
+        source=source,
+        target_shape=target_shape,
+        row_source_indices=row_source,
+        row_target_indices=row_target,
+        col_source_indices=col_source,
+        col_target_indices=col_target,
+        fill_value=fill_value,
+    )
+
+
+def experimental_remap_q_proj_weight(
+    source: torch.Tensor,
+    target_shape: tuple[int, int],
+    source_num_q_heads: int,
+    target_num_q_heads: int,
+    source_hidden_size: int,
+    target_hidden_size: int,
+    source_head_dim: int,
+    target_head_dim: int,
+) -> torch.Tensor:
+    """Experimental q_proj remap for mismatched head layouts."""
+    _check_shape(
+        source.shape,
+        (source_num_q_heads * source_head_dim, source_hidden_size),
+        "source q_proj.weight",
+    )
+    if target_shape != (target_num_q_heads * target_head_dim, target_hidden_size):
+        raise ValueError("target_shape does not match target q_proj metadata")
+    if source_hidden_size % source_head_dim != 0:
+        raise ValueError("source_hidden_size must be divisible by source_head_dim")
+    if target_hidden_size % target_head_dim != 0:
+        raise ValueError("target_hidden_size must be divisible by target_head_dim")
+
+    return remap_matrix_by_block_axes(
+        source=source,
+        target_shape=target_shape,
+        row_source_blocks=source_num_q_heads,
+        row_target_blocks=target_num_q_heads,
+        row_source_block_size=source_head_dim,
+        row_target_block_size=target_head_dim,
+        col_source_blocks=source_hidden_size // source_head_dim,
+        col_target_blocks=target_hidden_size // target_head_dim,
+        col_source_block_size=source_head_dim,
+        col_target_block_size=target_head_dim,
+        fill_value=0,
+    )
+
+
+def experimental_remap_kv_proj_weight(
+    source: torch.Tensor,
+    target_shape: tuple[int, int],
+    source_num_kv_heads: int,
+    target_num_kv_heads: int,
+    source_hidden_size: int,
+    target_hidden_size: int,
+    source_head_dim: int,
+    target_head_dim: int,
+) -> torch.Tensor:
+    """Experimental k_proj/v_proj remap for mismatched MHA/GQA layouts."""
+    _check_shape(
+        source.shape,
+        (source_num_kv_heads * source_head_dim, source_hidden_size),
+        "source kv_proj.weight",
+    )
+    if target_shape != (target_num_kv_heads * target_head_dim, target_hidden_size):
+        raise ValueError("target_shape does not match target kv_proj metadata")
+    if source_hidden_size % source_head_dim != 0:
+        raise ValueError("source_hidden_size must be divisible by source_head_dim")
+    if target_hidden_size % target_head_dim != 0:
+        raise ValueError("target_hidden_size must be divisible by target_head_dim")
+
+    return remap_matrix_by_block_axes(
+        source=source,
+        target_shape=target_shape,
+        row_source_blocks=source_num_kv_heads,
+        row_target_blocks=target_num_kv_heads,
+        row_source_block_size=source_head_dim,
+        row_target_block_size=target_head_dim,
+        col_source_blocks=source_hidden_size // source_head_dim,
+        col_target_blocks=target_hidden_size // target_head_dim,
+        col_source_block_size=source_head_dim,
+        col_target_block_size=target_head_dim,
+        fill_value=0,
+    )
+
+
+def experimental_remap_o_proj_weight(
+    source: torch.Tensor,
+    target_shape: tuple[int, int],
+    source_num_q_heads: int,
+    target_num_q_heads: int,
+    source_hidden_size: int,
+    target_hidden_size: int,
+    source_head_dim: int,
+    target_head_dim: int,
+) -> torch.Tensor:
+    """Experimental o_proj remap for mismatched head layouts."""
+    _check_shape(
+        source.shape,
+        (source_hidden_size, source_num_q_heads * source_head_dim),
+        "source o_proj.weight",
+    )
+    if target_shape != (target_hidden_size, target_num_q_heads * target_head_dim):
+        raise ValueError("target_shape does not match target o_proj metadata")
+    if source_hidden_size % source_head_dim != 0:
+        raise ValueError("source_hidden_size must be divisible by source_head_dim")
+    if target_hidden_size % target_head_dim != 0:
+        raise ValueError("target_hidden_size must be divisible by target_head_dim")
+
+    return remap_matrix_by_block_axes(
+        source=source,
+        target_shape=target_shape,
+        row_source_blocks=source_hidden_size // source_head_dim,
+        row_target_blocks=target_hidden_size // target_head_dim,
+        row_source_block_size=source_head_dim,
+        row_target_block_size=target_head_dim,
+        col_source_blocks=source_num_q_heads,
+        col_target_blocks=target_num_q_heads,
+        col_source_block_size=source_head_dim,
+        col_target_block_size=target_head_dim,
+        fill_value=0,
+    )
+
+
 def _check_same_head_dim(source_head_dim: int, target_head_dim: int) -> int:
     if source_head_dim != target_head_dim:
         raise ValueError("head_dim mismatch is not supported in expand v0")
