@@ -81,6 +81,23 @@ def copy_target_tokenizer_files(target_model_dir: Path, output_dir: Path) -> Non
             shutil.copy2(source_path, output_dir / file_name)
 
 
+def copy_target_config_files(target_model_dir: Path, output_dir: Path) -> None:
+    # Transformers versions can serialize the same Llama RoPE config with
+    # different field names, for example rope_scaling/rope_theta in older
+    # configs versus rope_parameters in newer configs. This project is
+    # target-anchored, so keep the target config files byte-for-byte compatible
+    # with downstream eval loaders that expect the original schema.
+    config_file_names = [
+        "config.json",
+        "generation_config.json",
+    ]
+
+    for file_name in config_file_names:
+        source_path = target_model_dir / file_name
+        if source_path.exists():
+            shutil.copy2(source_path, output_dir / file_name)
+
+
 def main() -> None:
     args = parse_args()
 
@@ -151,6 +168,9 @@ def main() -> None:
         args.output_dir,
         safe_serialization=True,
     )
+
+    print("Copying target config files...")
+    copy_target_config_files(args.target_model, args.output_dir)
 
     print("Copying target tokenizer files...")
     copy_target_tokenizer_files(args.target_model, args.output_dir)
