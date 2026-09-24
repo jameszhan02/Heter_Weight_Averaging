@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 from pathlib import Path
 
 import torch
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM
 
 from model_merge import merge_state_dict_experimental_target_anchor
 
@@ -53,11 +54,31 @@ def parse_args() -> argparse.Namespace:
         help="Keep target normalization weights unchanged.",
     )
     parser.add_argument(
+        "--merge-vocab",
+        action="store_true",
+        help="Merge embed_tokens/lm_head when source and target vocab weights have identical shapes.",
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Allow saving into an existing output directory.",
     )
     return parser.parse_args()
+
+
+def copy_target_tokenizer_files(target_model_dir: Path, output_dir: Path) -> None:
+    tokenizer_file_names = [
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+        "added_tokens.json",
+        "chat_template.jinja",
+    ]
+
+    for file_name in tokenizer_file_names:
+        source_path = target_model_dir / file_name
+        if source_path.exists():
+            shutil.copy2(source_path, output_dir / file_name)
 
 
 def main() -> None:
@@ -103,6 +124,7 @@ def main() -> None:
         merge_attention=not args.skip_attention,
         merge_mlp=not args.skip_mlp,
         merge_norm=not args.skip_norm,
+        merge_vocab=args.merge_vocab,
     )
 
     print("Validating merged tensors...")
@@ -130,12 +152,8 @@ def main() -> None:
         safe_serialization=True,
     )
 
-    print("Saving target tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.target_model,
-        local_files_only=True,
-    )
-    tokenizer.save_pretrained(args.output_dir)
+    print("Copying target tokenizer files...")
+    copy_target_tokenizer_files(args.target_model, args.output_dir)
 
     print("Done.")
     print(f"Merged checkpoint saved to: {args.output_dir.resolve()}")

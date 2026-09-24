@@ -247,6 +247,7 @@ def merge_state_dict_experimental_target_anchor(
     merge_attention: bool = True,
     merge_mlp: bool = True,
     merge_norm: bool = True,
+    merge_vocab: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Experimental cross-architecture merge anchored on the target checkpoint.
 
@@ -264,7 +265,21 @@ def merge_state_dict_experimental_target_anchor(
 
     for key, target_tensor in target_state.items():
         if _is_vocab_weight(key):
-            merged[key] = target_tensor.clone()
+            source_tensor = source_state.get(key)
+            if (
+                merge_vocab
+                and source_tensor is not None
+                and tuple(source_tensor.shape) == tuple(target_tensor.shape)
+            ):
+                merged[key] = weighted_average_tensors(
+                    target_tensor,
+                    source_tensor,
+                    alpha=alpha,
+                )
+            elif merge_vocab:
+                raise ValueError(f"cannot merge vocab weight with incompatible key: {key}")
+            else:
+                merged[key] = target_tensor.clone()
             continue
 
         source_tensor = source_state.get(key)
